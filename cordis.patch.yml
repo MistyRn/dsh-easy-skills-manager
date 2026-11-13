@@ -1,0 +1,6 @@
+# dsh-easy-skills-manager bundle layer.
+# Host serves skill discovery/toggle/import routes; the browser half contributes
+# the left-sidebar panel and the conversation header skills tab.
+- insert:
+    - id: dsh-easy-skills-manager
+      name: dsh-easy-skills-manager

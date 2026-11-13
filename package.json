@@ -1,0 +1,33 @@
+{
+  "name": "dsh-easy-skills-manager",
+  "version": "0.1.0",
+  "description": "DSH 技能快捷管理器：左侧栏与对话顶部工具栏统一开关全局/工作区技能，支持拖入 .md 导入并手动命名。",
+  "license": "MIT",
+  "author": "DSH user",
+  "private": true,
+  "type": "module",
+  "main": "host.js",
+  "exports": {
+    ".": "./host.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": ["host.js", "client.js", "cordis.patch.yml", "README.md", "LICENSE"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "engines": { "node": ">=22.19.0" }
+}
