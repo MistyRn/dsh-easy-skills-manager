@@ -10,8 +10,8 @@
  * 分类、成员归属存在 $DSH_HOME/dsh-easy-skills-manager.state.json。
  */
 import { homedir } from 'node:os'
-import { join, basename } from 'node:path'
-import { readdir, readFile, stat, mkdir, rename, rm, writeFile, cp } from 'node:fs/promises'
+import { join, basename, isAbsolute } from 'node:path'
+import { readdir, readFile, stat, mkdir, rename, rm, writeFile } from 'node:fs/promises'
 
 export const name = 'dsh-easy-skills-manager'
 export const inject = ['webServer', 'workspaceRegistry', 'agents']
@@ -70,6 +70,27 @@ function firstLine(text) {
 
 async function pathIsFile(p) { try { return (await stat(p)).isFile() } catch { return false } }
 
+// 每份 frontmatter 只解析一次：/state 从「读全文」降为「stat + 必要时重读」
+const metaCache = new Map()
+async function readMeta(file, fallbackName) {
+  try {
+    const info = await stat(file)
+    const cached = metaCache.get(file)
+    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached
+    const parsed = parseFrontmatter(await readFile(file, 'utf8'))
+    const meta = {
+      mtimeMs: info.mtimeMs,
+      size: info.size,
+      name: parsed.fields.name || fallbackName,
+      description: parsed.fields.description || firstLine(parsed.body),
+    }
+    metaCache.set(file, meta)
+    return meta
+  } catch {
+    return { name: fallbackName, description: '' }
+  }
+}
+
 // ── 分类状态 ─────────────────────────────────────────────────────────────────
 
 async function readState() {
@@ -82,7 +103,28 @@ async function readState() {
 
 async function writeState(s) {
   await mkdir(DSH_HOME, { recursive: true })
-  await writeFile(STATE_FILE, JSON.stringify(s, null, 2) + '\n', 'utf8')
+  // 原子写：先写临时文件再改名，进程中途退出不会留下半截 JSON
+  const tmp = STATE_FILE + '.' + process.pid + '.tmp'
+  await writeFile(tmp, JSON.stringify(s, null, 2) + '\n', 'utf8')
+  try { await rename(tmp, STATE_FILE) } catch (error) { await rm(tmp, { force: true }); throw error }
+}
+
+// 所有「读-改-写」串行化：两个请求同时读到旧状态会互相覆盖
+let stateChain = Promise.resolve()
+function withStateLock(fn) {
+  const run = stateChain.then(fn, fn)
+  stateChain = run.then(() => {}, () => {})
+  return run
+}
+
+/** 锁内完成一次状态变更：readState → mutate → writeState。 */
+function mutateState(mutate) {
+  return withStateLock(async () => {
+    const state = await readState()
+    const result = await mutate(state)
+    await writeState(state)
+    return result
+  })
 }
 
 function scopeKey(scope, workspacePath) {
@@ -95,7 +137,74 @@ function scopeBucket(state, key) {
   if (!Array.isArray(b.categories)) b.categories = []
   if (!b.members || typeof b.members !== 'object') b.members = {}
   if (!b.pinned || typeof b.pinned !== 'object') b.pinned = {}
+  if (!b.links || typeof b.links !== 'object') b.links = {}
+  if (!b.off || typeof b.off !== 'object') b.off = {}
   return b
+}
+
+function defaultGlobalRoot() {
+  return join(DSH_HOME, 'skills')
+}
+
+/** 全局技能根：默认 <DSH_HOME>/skills，可由设置覆盖。 */
+function globalRootOf(state) {
+  const settings = state && state.settings && typeof state.settings === 'object' ? state.settings : {}
+  const custom = typeof settings.globalRoot === 'string' ? settings.globalRoot.trim() : ''
+  return custom || defaultGlobalRoot()
+}
+
+/** 会话级技能：只在该会话注入，不改任何全局设置。 */
+function sessionBucket(state, sessionId) {
+  state.sessions = state.sessions && typeof state.sessions === 'object' ? state.sessions : {}
+  const key = String(sessionId || '')
+  if (!state.sessions[key] || typeof state.sessions[key] !== 'object') state.sessions[key] = { pins: [] }
+  const bucket = state.sessions[key]
+  if (!Array.isArray(bucket.pins)) bucket.pins = []
+  return bucket
+}
+
+/** 某作用域内技能当前的实际挡位（用于判断会话覆盖是否已与继承值相同）。 */
+async function inheritedMode(state, pin) {
+  const key = pin.scope === 'workspace' ? scopeKey('workspace', pin.workspacePath) : 'global'
+  const bucket = state.scopes && state.scopes[key] ? state.scopes[key] : null
+  const root = pin.scope === 'workspace' ? join(String(pin.workspacePath || ''), '.dsh', 'skills') : globalRootOf(state)
+  try {
+    const scan = await scanRoot(root, bucket)
+    const hit = scan.skills.find((s) => s.dirName === pin.dirName)
+    return hit ? hit.mode : null
+  } catch { return null }
+}
+
+/** 全局技能被删除/停用时，清掉所有会话对它的覆盖。 */
+function dropOverridesForSkill(state, scope, dirName) {
+  if (!state.sessions || typeof state.sessions !== 'object') return 0
+  let removed = 0
+  for (const key of Object.keys(state.sessions)) {
+    const session = state.sessions[key]
+    if (!session || !Array.isArray(session.pins)) continue
+    const before = session.pins.length
+    session.pins = session.pins.filter((p) => !(p.scope === scope && p.dirName === dirName))
+    removed += before - session.pins.length
+  }
+  return removed
+}
+
+/** 会话卡片实际指向的物理位置：工作区/全局里的逻辑链接要穿过去。 */
+function pinResolve(state, pin) {
+  const key = pin.scope === 'workspace' ? scopeKey('workspace', pin.workspacePath) : 'global'
+  const bucket = state.scopes && state.scopes[key] ? state.scopes[key] : null
+  const link = bucket && bucket.links ? bucket.links[pin.dirName] : null
+  if (link) return { root: linkRoot(state, link), dirName: link.dirName }
+  return {
+    root: pin.scope === 'workspace' ? join(String(pin.workspacePath || ''), '.dsh', 'skills') : globalRootOf(state),
+    dirName: pin.dirName,
+  }
+}
+
+/** 链接指向的物理根。 */
+function linkRoot(state, link) {
+  if (link && link.scope === 'workspace') return join(String(link.workspacePath || ''), '.dsh', 'skills')
+  return globalRootOf(state)
 }
 
 function categoryId(name) {
@@ -119,13 +228,9 @@ async function scanRoot(root, bucket) {
     if (await pathIsFile(live)) { enabled = true; filePath = live }
     else if (await pathIsFile(dead)) { enabled = false; filePath = dead }
     if (!filePath) continue
-    let skillName = e.name
-    let description = ''
-    try {
-      const parsed = parseFrontmatter(await readFile(filePath, 'utf8'))
-      skillName = parsed.fields.name || e.name
-      description = parsed.fields.description || firstLine(parsed.body)
-    } catch { /* 保留目录名 */ }
+    const meta = await readMeta(filePath, e.name)
+    const skillName = meta.name
+    const description = meta.description
     const pinned = !!(bucket && bucket.pinned && bucket.pinned[e.name] === true)
     skills.push({
       dirName: e.name,
@@ -218,6 +323,33 @@ async function deleteSkill(root, dirName) {
   await rename(d, join(trash, dirName + '-' + stamp))
 }
 
+/** 回收站条目：还原用的 entry、原目录名、删除时间。 */
+async function listTrash(root) {
+  let entries
+  try { entries = await readdir(join(root, TRASH_DIR), { withFileTypes: true }) } catch { return [] }
+  const out = []
+  for (const e of entries) {
+    if (!e.isDirectory()) continue
+    const m = e.name.match(/^(.*)-(\d{4}-\d{2}-\d{2}T[\d-]+Z)$/)
+    let at = 0
+    try { at = (await stat(join(root, TRASH_DIR, e.name))).mtimeMs } catch { /* 取不到时间就用 0 */ }
+    out.push({ entry: e.name, dirName: m ? m[1] : e.name, at })
+  }
+  return out.sort((a, b) => b.at - a.at)
+}
+
+async function restoreTrash(root, entry, dirName) {
+  const src = join(root, TRASH_DIR, cleanDirName(entry))
+  const dst = join(root, cleanDirName(dirName))
+  if (!(await pathIsFile(join(src, SKILL_FILE))) && !(await pathIsFile(join(src, SKILL_FILE + DISABLED_SUFFIX)))) {
+    throw new HttpError(404, '回收站里没有这个技能')
+  }
+  if ((await pathIsFile(join(dst, SKILL_FILE))) || (await pathIsFile(join(dst, SKILL_FILE + DISABLED_SUFFIX)))) {
+    throw new HttpError(409, '同名技能已存在，请先改名或删除它')
+  }
+  await rename(src, dst)
+}
+
 // ── 工作区 ───────────────────────────────────────────────────────────────────
 
 async function rawWorkspaces(ctx) {
@@ -270,14 +402,59 @@ async function resolveScope(ctx, scope, workspacePath, sessionId) {
     if (!active || !active.path) throw new HttpError(400, '未找到工作区')
     return { root: join(active.path, '.dsh', 'skills'), key: scopeKey('workspace', active.path), workspacePath: active.path }
   }
-  return { root: join(DSH_HOME, 'skills'), key: 'global', workspacePath: null }
+  const state = await readState()
+  return { root: globalRootOf(state), key: 'global', workspacePath: null }
+}
+
+/** 逻辑链接（不复制文件）在某个作用域里投影出的技能条目。 */
+async function listLinkedSkills(state, bucket) {
+  const out = []
+  for (const alias of Object.keys(bucket.links || {})) {
+    const link = bucket.links[alias]
+    try {
+      const root = linkRoot(state, link)
+      const dir = join(root, link.dirName)
+      const live = join(dir, SKILL_FILE)
+      const dead = join(dir, SKILL_FILE + DISABLED_SUFFIX)
+      let file = null
+      if (await pathIsFile(live)) file = live
+      else if (await pathIsFile(dead)) file = dead
+      if (!file) continue
+      const meta = await readMeta(file, link.dirName)
+      // 链接的启停只由本分区自己的记录决定，不受源文件停用状态影响
+      const off = bucket.off[alias] === true
+      const pinned = bucket.pinned[alias] === true
+      out.push({
+        dirName: alias,
+        name: meta.name,
+        description: meta.description,
+        enabled: !off,
+        mode: off ? 'off' : (pinned ? 'pinned' : 'available'),
+        categoryId: bucket.members[alias] || null,
+        linked: true,
+        link: { scope: link.scope, workspacePath: link.workspacePath || null, dirName: link.dirName },
+      })
+    } catch { /* 目标不可读时跳过 */ }
+  }
+  return out
+}
+
+/** 解析某作用域里的技能：可能是本地目录，也可能是指向别处的逻辑链接。 */
+async function resolveSkill(ctx, scope, dirName, workspacePath, sessionId) {
+  const resolved = await resolveScope(ctx, scope, workspacePath, sessionId)
+  const state = await readState()
+  const bucket = scopeBucket(state, resolved.key)
+  const link = bucket.links[dirName]
+  if (!link) return { state, bucket, key: resolved.key, root: resolved.root, dirName, isLink: false, link: null }
+  return { state, bucket, key: resolved.key, root: linkRoot(state, link), dirName: link.dirName, isLink: true, link }
 }
 
 async function buildState(ctx, sessionId, workspacePath) {
   const state = await readState()
-  const globalRoot = join(DSH_HOME, 'skills')
-  const globalBucket = state.scopes.global || { categories: [], members: {} }
+  const globalRoot = globalRootOf(state)
+  const globalBucket = scopeBucket(state, 'global')
   const globalScan = await scanRoot(globalRoot, globalBucket)
+  const globalLinked = await listLinkedSkills(state, globalBucket)
 
   const spaces = await listWorkspaces(ctx)
   const active = await resolveActiveWorkspace(ctx, sessionId, workspacePath)
@@ -285,14 +462,51 @@ async function buildState(ctx, sessionId, workspacePath) {
   if (active && active.path) {
     const wroot = join(active.path, '.dsh', 'skills')
     const key = scopeKey('workspace', active.path)
-    const bucket = state.scopes[key] || { categories: [], members: {} }
+    const bucket = scopeBucket(state, key)
     const scan = await scanRoot(wroot, bucket)
-    workspace = { ...scan, title: active.title, path: active.path, key, categories: bucket.categories }
+    const linked = await listLinkedSkills(state, bucket)
+    workspace = { ...scan, skills: [...scan.skills, ...linked], title: active.title, path: active.path, key, categories: bucket.categories }
+  }
+  const root = defaultGlobalRoot()
+  const sessionPins = []
+  if (sessionId) {
+    const session = state.sessions && state.sessions[String(sessionId)]
+    for (const pin of (session && Array.isArray(session.pins) ? session.pins : [])) {
+      try {
+        const at = pinResolve(state, pin)
+        const dir = join(at.root, at.dirName)
+        const live = join(dir, SKILL_FILE)
+        const dead = join(dir, SKILL_FILE + DISABLED_SUFFIX)
+        const isLive = await pathIsFile(live)
+        const file = isLive ? live : (await pathIsFile(dead)) ? dead : null
+        if (!file) continue
+        const meta = await readMeta(file, pin.dirName)
+        sessionPins.push({
+          dirName: pin.dirName,
+          name: meta.name,
+          description: meta.description,
+          scope: pin.scope,
+          workspacePath: pin.workspacePath || null,
+          mode: pin.mode || 'pinned',
+          disabled: !isLive,
+        })
+      } catch { /* 失效的会话技能跳过 */ }
+    }
+  }
+  if (sessionId && state.sessions && state.sessions[String(sessionId)]) {
+    const pins = Array.isArray(state.sessions[String(sessionId)].pins) ? state.sessions[String(sessionId)].pins : []
+    for (const skill of globalScan.skills) {
+      const pin = pins.find((p) => p.scope === 'global' && p.dirName === skill.dirName)
+      if (pin) { skill.sessionMode = pin.mode; skill.sessionOverride = true }
+    }
   }
   return {
+    sessionPins,
     globalRoot,
+    defaultGlobalRoot: root,
+    customGlobalRoot: globalRoot !== root,
     statePath: STATE_FILE,
-    global: { root: globalRoot, exists: globalScan.exists, skills: globalScan.skills, categories: globalBucket.categories, key: 'global' },
+    global: { root: globalRoot, exists: globalScan.exists, skills: [...globalScan.skills, ...globalLinked], categories: globalBucket.categories, key: 'global' },
     workspace,
     workspaces: spaces,
     sessionId: sessionId || null,
@@ -401,11 +615,11 @@ export async function saveSkillForTool(ctx, args, sessionId) {
   await writeFile(live, buildDocument(skillName, description, body), 'utf8')
   await rm(dead, { force: true })
   if (args.mode === 'pinned' || args.mode === 'off') {
-    const state = await readState()
-    const bucket = scopeBucket(state, resolved.key)
-    if (args.mode === 'pinned') bucket.pinned[skillName] = true
-    else { delete bucket.pinned[skillName]; await setSkillEnabled(resolved.root, skillName, false) }
-    await writeState(state)
+    await mutateState(async (state) => {
+      const bucket = scopeBucket(state, resolved.key)
+      if (args.mode === 'pinned') bucket.pinned[skillName] = true
+      else { delete bucket.pinned[skillName]; await setSkillEnabled(resolved.root, skillName, false) }
+    })
   }
   invalidateSkills(ctx)
   return JSON.stringify({ ok: true, name: skillName, description, scope, path: live, enabled: true, updated: exists })
@@ -496,20 +710,55 @@ function markSkillsDirty() {
 
 export async function collectEnabledDocs(ctx, sessionId) {
   const state = await readState()
+  const session = state.sessions && sessionId ? state.sessions[String(sessionId)] : null
+  const pins = session && Array.isArray(session.pins) ? session.pins : []
+  // 会话覆盖按「技能名」判定：同名技能无论来自哪个作用域，都由会话卡片接管
+  const overridden = new Set()
+  for (const pin of pins) {
+    try {
+      const at = pinResolve(state, pin)
+      overridden.add((await readSkillDoc(at.root, at.dirName)).name)
+    } catch { /* 失效会话卡片忽略 */ }
+  }
+
   const docs = []
-  const push = async (root, bucket) => {
-    const scan = await scanRoot(root, bucket || { categories: [], members: {} })
+  const push = async (scope, root, bucket) => {
+    const b = bucket || { categories: [], members: {}, pinned: {}, links: {} }
+    const scan = await scanRoot(root, b)
     for (const skill of scan.skills) {
       if (skill.mode !== 'pinned') continue
-      try { docs.push(await readSkillDoc(root, skill.dirName)) } catch { /* 单个读取失败不影响其他 */ }
+      try {
+        const doc = await readSkillDoc(root, skill.dirName)
+        if (!overridden.has(doc.name)) docs.push(doc)
+      } catch { /* 单个读取失败不影响其他 */ }
+    }
+    const links = b.links || {}
+    for (const alias of Object.keys(links)) {
+      if (!b.pinned || b.pinned[alias] !== true) continue
+      if (b.off && b.off[alias] === true) continue
+      try {
+        const doc = await readSkillDoc(linkRoot(state, links[alias]), links[alias].dirName)
+        if (!overridden.has(doc.name)) docs.push(doc)
+      } catch { /* 链接目标不可读 */ }
     }
   }
-  await push(join(DSH_HOME, 'skills'), state.scopes.global)
+  // 工作区优先：先收集工作区，同名技能去重时保留下来的就是工作区那份
   const active = await resolveActiveWorkspace(ctx, sessionId, null).catch(() => null)
   if (active && active.path) {
-    await push(join(active.path, '.dsh', 'skills'), state.scopes[scopeKey('workspace', active.path)])
+    await push('workspace', join(active.path, '.dsh', 'skills'), state.scopes[scopeKey('workspace', active.path)])
   }
-  return docs
+  await push('global', globalRootOf(state), state.scopes.global)
+  // 会话卡片：只有「常驻」才注入
+  for (const pin of pins) {
+    if ((pin.mode || 'pinned') !== 'pinned') continue
+    try {
+      const at = pinResolve(state, pin)
+      docs.push(await readSkillDoc(at.root, at.dirName))
+    } catch { /* 目标不存在则跳过 */ }
+  }
+  // 同名只保留一份
+  const seen = new Set()
+  return docs.filter((doc) => (seen.has(doc.name) ? false : (seen.add(doc.name), true)))
 }
 
 export function renderActiveSkills(docs) {
@@ -520,15 +769,23 @@ export function renderActiveSkills(docs) {
   ]
   let budget = ACTIVE_MAX_CHARS
   let count = 0
+  const seen = new Set()
+  const skipped = new Set()
   for (const doc of docs) {
-    if (count >= ACTIVE_MAX_SKILLS) break
+    if (seen.has(doc.name)) continue
     const body = String(doc.body || '').trim()
     if (!body) continue
     const chunk = '<skill name="' + doc.name + '">\n' + body + '\n</skill>'
-    if (chunk.length > budget) break
+    if (count >= ACTIVE_MAX_SKILLS || chunk.length > budget) { skipped.add(doc.name); continue }
+    seen.add(doc.name)
     budget -= chunk.length
     count += 1
     lines.push(chunk)
+  }
+  // 截断不再静默：模型和用户都该知道有常驻技能没进去
+  if (skipped.size) {
+    lines.push('> 已达注入上限（' + ACTIVE_MAX_SKILLS + ' 个技能 / ' + ACTIVE_MAX_CHARS + ' 字符）。'
+      + '另有 ' + skipped.size + ' 个常驻技能本轮未注入：' + [...skipped].slice(0, 10).join('、') + (skipped.size > 10 ? ' 等' : '') + '。')
   }
   return count === 0 ? '' : lines.join('\n\n')
 }
@@ -586,7 +843,8 @@ export function apply(ctx) {
 
   const guard = (label, handler) => (req, res) => {
     Promise.resolve()
-      .then(() => handler(req, res))
+      // 写请求串行：每个 POST 都是「读-改-写」，并发会丢更新
+      .then(() => (req.method === 'POST' ? withStateLock(() => handler(req, res)) : handler(req, res)))
       .then(() => { if (req.method === 'POST') markSkillsDirty() })
       .catch((error) => {
         const status = error instanceof HttpError ? error.status : 500
@@ -601,6 +859,80 @@ export function apply(ctx) {
   ctx.effect(() => {
     const disposers = []
 
+    disposers.push(route('/session', 'session', async (req, res) => {
+      if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+      const body = await readJsonBody(req)
+      const sessionId = String(body.sessionId || '')
+      if (!sessionId) throw new HttpError(400, '缺少会话 ID')
+      const dirName = cleanDirName(body.dirName)
+      const scope = body.scope === 'workspace' ? 'workspace' : 'global'
+      const state = await readState()
+      const bucket = sessionBucket(state, sessionId)
+      const same = (p) => p.dirName === dirName && p.scope === scope
+      const mode = body.mode === 'available' ? 'available' : body.mode === 'off' ? 'off' : 'pinned'
+      if (body.action === 'remove') {
+        bucket.pins = bucket.pins.filter((p) => !same(p))
+      } else if (body.action === 'mode') {
+        const pinRef = { scope, workspacePath: body.workspacePath || null, dirName }
+        const inherited = await inheritedMode(state, pinRef)
+        const existing = bucket.pins.find(same)
+        if (inherited !== null && inherited === mode) {
+          // 与全局状态一致 → 不保留覆盖
+          if (existing) bucket.pins = bucket.pins.filter((p) => !same(p))
+        } else if (existing) {
+          existing.mode = mode
+        } else {
+          if (bucket.pins.length >= 50) throw new HttpError(400, '本会话的技能覆盖最多 50 条')
+          const at = pinResolve(state, pinRef)
+          if (!(await pathIsFile(join(at.root, at.dirName, SKILL_FILE)))) {
+            throw new HttpError(404, '技能不可用（不存在或已停用）')
+          }
+          bucket.pins.push({ scope, workspacePath: scope === 'workspace' ? String(body.workspacePath || '') : null, dirName, mode })
+        }
+      } else {
+        const at = pinResolve(state, { scope, workspacePath: body.workspacePath, dirName })
+        if (!(await pathIsFile(join(at.root, at.dirName, SKILL_FILE)))) {
+          throw new HttpError(404, '技能不可用（不存在或已停用）')
+        }
+        const existing = bucket.pins.find(same)
+        if (existing) existing.mode = mode
+        else bucket.pins.push({ scope, workspacePath: scope === 'workspace' ? String(body.workspacePath || '') : null, dirName, mode })
+      }
+      await writeState(state)
+      invalidateSkills(ctx)
+      sendJson(res, 200, { ok: true, pins: bucket.pins })
+    }))
+
+    disposers.push(route('/settings', 'settings', async (req, res) => {
+      const state = await readState()
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        sendJson(res, 200, {
+          ok: true,
+          globalRoot: globalRootOf(state),
+          defaultGlobalRoot: defaultGlobalRoot(),
+          custom: globalRootOf(state) !== defaultGlobalRoot(),
+        }, req.method === 'HEAD')
+        return
+      }
+      if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+      const body = await readJsonBody(req)
+      const raw = typeof body.globalRoot === 'string' ? body.globalRoot.trim() : ''
+      if (!raw) {
+        if (state.settings && typeof state.settings === 'object') delete state.settings.globalRoot
+        await writeState(state)
+        invalidateSkills(ctx)
+        sendJson(res, 200, { ok: true, globalRoot: globalRootOf(state), defaultGlobalRoot: defaultGlobalRoot() })
+        return
+      }
+      if (raw.length > 512) throw new HttpError(400, '路径过长')
+      if (!isAbsolute(raw)) throw new HttpError(400, '请填写绝对路径，例如 D:\\Skills')
+      await mkdir(raw, { recursive: true })
+      state.settings = { ...(state.settings && typeof state.settings === 'object' ? state.settings : {}), globalRoot: raw }
+      await writeState(state)
+      invalidateSkills(ctx)
+      sendJson(res, 200, { ok: true, globalRoot: globalRootOf(state), defaultGlobalRoot: defaultGlobalRoot() })
+    }))
+
     disposers.push(route('/state', 'state', async (req, res) => {
       if (req.method !== 'GET' && req.method !== 'HEAD') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
       const url = new URL(req.url || '/', 'http://localhost')
@@ -613,18 +945,10 @@ export function apply(ctx) {
       const url = new URL(req.url || '/', 'http://localhost')
       const scope = url.searchParams.get('scope') === 'workspace' ? 'workspace' : 'global'
       const dirName = cleanDirName(url.searchParams.get('dirName'))
-      const resolved = await resolveScope(ctx, scope, url.searchParams.get('workspace'), url.searchParams.get('sessionId'))
-      sendJson(res, 200, { ok: true, ...(await readSkillDoc(resolved.root, dirName)) })
+      const ref = await resolveSkill(ctx, scope, dirName, url.searchParams.get('workspace'), url.searchParams.get('sessionId'))
+      sendJson(res, 200, { ok: true, ...(await readSkillDoc(ref.root, ref.dirName)) })
     }))
 
-    disposers.push(route('/toggle', 'toggle', async (req, res) => {
-      if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
-      const body = await readJsonBody(req)
-      const scope = body.scope === 'workspace' ? 'workspace' : 'global'
-      const resolved = await resolveScope(ctx, scope, body.workspacePath, body.sessionId)
-      await setSkillEnabled(resolved.root, cleanDirName(body.dirName), body.enabled === true)
-      sendJson(res, 200, { ok: true })
-    }))
 
     disposers.push(route('/import', 'import', async (req, res) => {
       if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
@@ -650,11 +974,11 @@ export function apply(ctx) {
       const scope = body.scope === 'workspace' ? 'workspace' : 'global'
       const dirName = cleanDirName(body.dirName)
       const skillName = cleanName(body.name)
-      const resolved = await resolveScope(ctx, scope, body.workspacePath, body.sessionId)
+      const ref = await resolveSkill(ctx, scope, dirName, body.workspacePath, body.sessionId)
       const description = typeof body.description === 'string' ? body.description : ''
       const content = typeof body.body === 'string' ? body.body : ''
       if (Buffer.byteLength(content, 'utf8') > MAX_CONTENT_BYTES) throw new HttpError(400, '内容过大')
-      await updateSkill(resolved.root, dirName, skillName, description, content)
+      await updateSkill(ref.root, ref.dirName, skillName, description, content)
       sendJson(res, 200, { ok: true })
     }))
 
@@ -663,13 +987,34 @@ export function apply(ctx) {
       const body = await readJsonBody(req)
       const scope = body.scope === 'workspace' ? 'workspace' : 'global'
       const dirName = cleanDirName(body.dirName)
-      const resolved = await resolveScope(ctx, scope, body.workspacePath, body.sessionId)
-      await deleteSkill(resolved.root, dirName)
-      const state = await readState()
-      const bucket = scopeBucket(state, resolved.key)
+      const ref = await resolveSkill(ctx, scope, dirName, body.workspacePath, body.sessionId)
+      const state = ref.state
+      const bucket = ref.bucket
+      if (ref.isLink) delete bucket.links[dirName]
+      else await deleteSkill(ref.root, ref.dirName)
       delete bucket.members[dirName]
+      delete bucket.pinned[dirName]
+      dropOverridesForSkill(state, scope, dirName)
       await writeState(state)
-      sendJson(res, 200, { ok: true })
+      invalidateSkills(ctx)
+      sendJson(res, 200, { ok: true, unlinked: ref.isLink })
+    }))
+
+    disposers.push(route('/trash', 'trash', async (req, res) => {
+      const url = new URL(req.url || '/', 'http://localhost')
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const scope = url.searchParams.get('scope') === 'workspace' ? 'workspace' : 'global'
+        const resolved = await resolveScope(ctx, scope, url.searchParams.get('workspace'), url.searchParams.get('sessionId'))
+        sendJson(res, 200, { ok: true, scope, root: resolved.root, items: await listTrash(resolved.root) }, req.method === 'HEAD')
+        return
+      }
+      if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+      const body = await readJsonBody(req)
+      const scope = body.scope === 'workspace' ? 'workspace' : 'global'
+      const resolved = await resolveScope(ctx, scope, body.workspacePath, body.sessionId)
+      await restoreTrash(resolved.root, body.entry, body.dirName)
+      invalidateSkills(ctx)
+      sendJson(res, 200, { ok: true, scope })
     }))
 
     disposers.push(route('/mode', 'mode', async (req, res) => {
@@ -678,12 +1023,25 @@ export function apply(ctx) {
       const dirName = cleanDirName(body.dirName)
       const mode = body.mode === 'pinned' ? 'pinned' : body.mode === 'off' ? 'off' : 'available'
       const scope = body.scope === 'workspace' ? 'workspace' : 'global'
-      const resolved = await resolveScope(ctx, scope, body.workspacePath, body.sessionId)
-      await setSkillEnabled(resolved.root, dirName, mode !== 'off')
-      const state = await readState()
-      const bucket = scopeBucket(state, resolved.key)
+      const ref = await resolveSkill(ctx, scope, dirName, body.workspacePath, body.sessionId)
+      const state = ref.state
+      const bucket = ref.bucket
+      if (ref.isLink) {
+        // 链接与源共用同一份文件：停用/常驻只记在本分区，互不影响
+        if (mode === 'off') bucket.off[dirName] = true
+        else delete bucket.off[dirName]
+        if (mode === 'pinned') bucket.pinned[dirName] = true
+        else delete bucket.pinned[dirName]
+        await writeState(state)
+        invalidateSkills(ctx)
+        sendJson(res, 200, { ok: true, mode, dirName })
+        return
+      }
+      await setSkillEnabled(ref.root, ref.dirName, mode !== 'off')
       if (mode === 'pinned') bucket.pinned[dirName] = true
       else delete bucket.pinned[dirName]
+      // 全局停用后，会话覆盖自动失效
+      if (mode === 'off') dropOverridesForSkill(state, scope, dirName)
       await writeState(state)
       invalidateSkills(ctx)
       sendJson(res, 200, { ok: true, mode, dirName })
@@ -721,13 +1079,13 @@ export function apply(ctx) {
       const fromScope = body.scope === 'workspace' ? 'workspace' : 'global'
       const toScope = body.targetScope === 'workspace' ? 'workspace' : 'global'
       const categoryId = body.categoryId ? String(body.categoryId) : ''
-      const src = await resolveScope(ctx, fromScope, body.workspacePath, body.sessionId)
+      const srcRef = await resolveSkill(ctx, fromScope, dirName, body.workspacePath, body.sessionId)
       const dst = await resolveScope(ctx, toScope, body.targetWorkspace || body.workspacePath, body.sessionId)
-      const state = await readState()
+      const state = srcRef.state
       const dstBucket = scopeBucket(state, dst.key)
 
-      // 同一作用域内拖拽 = 只改分类，不复制文件
-      if (src.root === dst.root) {
+      // 同一物理根：只改分类，不动文件
+      if (srcRef.root === dst.root) {
         if (categoryId) {
           if (!dstBucket.categories.some((c) => c.id === categoryId)) throw new HttpError(404, '分类不存在')
           dstBucket.members[dirName] = categoryId
@@ -739,74 +1097,37 @@ export function apply(ctx) {
         return
       }
 
-      // 跨作用域拖拽 = 复制技能目录，源保持不变
-      const fromDir = join(src.root, dirName)
+      // 跨作用域拖拽 = 逻辑复制：只登记链接，不复制任何文件
+      const fromDir = join(srcRef.root, srcRef.dirName)
       if (!(await pathIsFile(join(fromDir, SKILL_FILE))) && !(await pathIsFile(join(fromDir, SKILL_FILE + DISABLED_SUFFIX)))) {
         throw new HttpError(404, '技能不存在')
       }
       const toDir = join(dst.root, dirName)
-      if ((await pathIsFile(join(toDir, SKILL_FILE))) || (await pathIsFile(join(toDir, SKILL_FILE + DISABLED_SUFFIX)))) {
-        throw new HttpError(409, '目标位置已有同名技能')
+      const targetExists = dstBucket.links[dirName]
+        || (await pathIsFile(join(toDir, SKILL_FILE)))
+        || (await pathIsFile(join(toDir, SKILL_FILE + DISABLED_SUFFIX)))
+      if (targetExists) {
+        // 两个分区状态独立：目标已存在就保持它自己的挡位，不覆盖
+        sendJson(res, 200, { ok: true, existed: true, scope: toScope })
+        return
       }
-      await mkdir(dst.root, { recursive: true })
-      await cp(fromDir, toDir, { recursive: true })
+      const origin = srcRef.isLink
+        ? { scope: srcRef.link.scope, workspacePath: srcRef.link.workspacePath || null, dirName: srcRef.dirName }
+        : { scope: fromScope, workspacePath: fromScope === 'workspace' ? (body.workspacePath || '') : null, dirName: srcRef.dirName }
+      dstBucket.links[dirName] = origin
       if (categoryId) {
         if (!dstBucket.categories.some((c) => c.id === categoryId)) throw new HttpError(404, '目标分类不存在')
         dstBucket.members[dirName] = categoryId
       }
+      // 新建时带上源启停状态；此后两个分区各自独立
+      if (body.mode === 'pinned') dstBucket.pinned[dirName] = true
+      else delete dstBucket.pinned[dirName]
+      if (body.mode === 'off') dstBucket.off[dirName] = true
+      else delete dstBucket.off[dirName]
       await writeState(state)
-      invalidateSkills(ctx)
-      sendJson(res, 200, { ok: true, copied: true, scope: toScope, target: dst.root })
+      sendJson(res, 200, { ok: true, copied: true, logical: true, scope: toScope, target: dst.root })
     }))
 
-    disposers.push(route('/move', 'move', async (req, res) => {
-      if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
-      const body = await readJsonBody(req)
-      const dirName = cleanDirName(body.dirName)
-      const fromScope = body.scope === 'workspace' ? 'workspace' : 'global'
-      const toScope = body.targetScope === 'workspace' ? 'workspace' : 'global'
-      const categoryId = body.categoryId ? String(body.categoryId) : ''
-      const src = await resolveScope(ctx, fromScope, body.workspacePath, body.sessionId)
-      const dst = await resolveScope(ctx, toScope, body.workspacePath, body.sessionId)
-      const state = await readState()
-      const srcBucket = scopeBucket(state, src.key)
-      const dstBucket = scopeBucket(state, dst.key)
-
-      // 同一作用域内拖拽 = 改分类
-      if (src.root === dst.root) {
-        if (categoryId) {
-          if (!dstBucket.categories.some((c) => c.id === categoryId)) throw new HttpError(404, '分类不存在')
-          dstBucket.members[dirName] = categoryId
-        } else {
-          delete dstBucket.members[dirName]
-        }
-        await writeState(state)
-        sendJson(res, 200, { ok: true, moved: false })
-        return
-      }
-
-      // 跨作用域拖拽 = 真实搬移技能目录
-      const fromDir = join(src.root, dirName)
-      const toDir = join(dst.root, dirName)
-      if (!(await pathIsFile(join(fromDir, SKILL_FILE))) && !(await pathIsFile(join(fromDir, SKILL_FILE + DISABLED_SUFFIX)))) {
-        throw new HttpError(404, '技能不存在')
-      }
-      if ((await pathIsFile(join(toDir, SKILL_FILE))) || (await pathIsFile(join(toDir, SKILL_FILE + DISABLED_SUFFIX)))) {
-        throw new HttpError(409, '目标作用域已有同名技能')
-      }
-      await mkdir(dst.root, { recursive: true })
-      try {
-        await rename(fromDir, toDir)
-      } catch {
-        await cp(fromDir, toDir, { recursive: true })
-        await rm(fromDir, { recursive: true, force: true })
-      }
-      delete srcBucket.members[dirName]
-      if (categoryId && dstBucket.categories.some((c) => c.id === categoryId)) dstBucket.members[dirName] = categoryId
-      await writeState(state)
-      invalidateSkills(ctx)
-      sendJson(res, 200, { ok: true, moved: true, scope: toScope })
-    }))
 
     disposers.push(route('/category', 'category', async (req, res) => {
       if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }

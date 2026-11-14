@@ -61,7 +61,17 @@ window.__ModuleLoader__.load({
       viewTitle: '技能', viewSubtitle: '本会话可用的全部技能 · 开关即时生效',
       viewSearch: '搜索技能…', viewNoMatch: '没有匹配的技能', viewScopeWs: '工作区', viewScopeGlobal: '已安装',
       viewShadowed: '被工作区同名技能覆盖',
+      sessionSkills: '本会话技能', sessionHint: '只对本会话生效，不改全局设置',
+      noSession: '当前会话尚未就绪',
+      globalAlreadyOn: '该技能已在全局开启，无需重复加入本会话',
+      dropToWorkspace: '把下面的技能拖到这里，仅在本工作区生效',
+      dropSkillHere: '把下面的技能拖到这里，仅在本会话生效', pinnedRemoved: '已移出本会话',
       preview: '预览', collapse: '折叠', expand: '展开',
+      searchSkills: '搜索技能…', storage: '存储位置', storageTitle: '技能存储位置', storageHint: '全局技能会读写这里。修改后不会移动已有文件；只有设为「常驻」的技能能脱离默认目录生效。',
+      storageDefault: '恢复默认', storageSaved: '存储位置已更新', storageInvalid: '请填写绝对路径',
+      restore: '还原到原分区', linked: '链接', unlinkHint: '仅移除链接，源技能保留在原来的位置。',
+      trash: '回收站', trashTitle: '回收站', trashHint: '删除的技能会留在对应的 .trash 里，可随时还原。',
+      trashEmpty: '回收站是空的', trashRestored: '已还原', trashRestore: '还原', trashWhen: '删除于',
     }
 
     var en = {
@@ -97,18 +107,47 @@ window.__ModuleLoader__.load({
       viewTitle: 'Skills', viewSubtitle: 'Every skill available in this conversation · toggles apply instantly',
       viewSearch: 'Search skills…', viewNoMatch: 'No matching skills', viewScopeWs: 'Workspace', viewScopeGlobal: 'Installed',
       viewShadowed: 'Overridden by a workspace skill of the same name',
+      sessionSkills: 'Session skills', sessionHint: 'Applies to this conversation only',
+      noSession: 'This conversation is not ready yet',
+      globalAlreadyOn: 'This skill is already enabled globally; no need to add it here',
+      dropToWorkspace: 'Drag a skill here to use it in this workspace only',
+      dropSkillHere: 'Drag a skill here to use it in this conversation only', pinnedRemoved: 'Removed from this session',
       preview: 'Preview', collapse: 'Collapse', expand: 'Expand',
+      searchSkills: 'Search skills…', storage: 'Storage', storageTitle: 'Skill storage location', storageHint: 'Global skills are read from here. Existing files are not moved; only pinned skills take effect outside the default directory.',
+      storageDefault: 'Reset', storageSaved: 'Storage location updated', storageInvalid: 'Enter an absolute path',
+      restore: 'Restore to section', linked: 'Link', unlinkHint: 'Removes the link only; the source skill stays where it is.',
+      trash: 'Trash', trashTitle: 'Trash', trashHint: 'Deleted skills stay in .trash and can be restored anytime.',
+      trashEmpty: 'Trash is empty', trashRestored: 'Restored', trashRestore: 'Restore', trashWhen: 'Deleted',
     }
 
     var CSS = [
       '.dsq{font-family:inherit;color:var(--dsw-alias-label-primary);font-size:13px}',
-      '.dsq-panel{box-sizing:border-box;height:100%;overflow-y:auto;padding:20px clamp(16px,3vw,34px) 44px;display:flex;flex-direction:column;gap:12px}',
-      '.dsq-panel>*{width:100%;max-width:1040px;margin:0 auto}',
-      '.dsq-head{display:flex;align-items:flex-end;gap:14px;padding:2px 2px 0}',
+      '.dsq-panel{box-sizing:border-box;height:100%;min-height:0;overflow-y:auto;overflow-x:hidden;padding:20px clamp(16px,3vw,34px) 44px;display:flex;flex-direction:column;gap:12px;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l2) transparent;scrollbar-gutter:stable}',
+      '.dsq-head-search{display:flex;gap:8px;align-items:center;width:100%}',
+      'html[data-dsq-skills-view] [data-composer-seat]{display:none!important}',
+      'html[data-dsq-skills-view] [data-conversation-region="composer"]{display:none!important}',
+      '.dsq-card-body{overflow:visible}',
+      '.dsq-list-scroll{overflow-x:hidden;min-height:0;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l2) transparent;overscroll-behavior:contain}',
+      '.dsq-list-scroll.is-capped{overflow-y:auto;max-height:330px}',
+      '.dsq-list-scroll.is-free{overflow:visible;max-height:none}',
+      '.dsq-list-scroll::-webkit-scrollbar{width:10px}',
+      '.dsq-list-scroll::-webkit-scrollbar-track{background:transparent}',
+      '.dsq-list-scroll::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:6px;border:2px solid transparent;background-clip:padding-box}',
+      '.dsq-card-body::-webkit-scrollbar{width:10px}',
+      '.dsq-card-body::-webkit-scrollbar-track{background:transparent}',
+      '.dsq-card-body::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:6px;border:2px solid transparent;background-clip:padding-box}',
+      '.dsq-panel::-webkit-scrollbar,.dsq-view-body::-webkit-scrollbar,.dsq-modal::-webkit-scrollbar{width:10px;height:10px}',
+      '.dsq-panel::-webkit-scrollbar-track,.dsq-view-body::-webkit-scrollbar-track,.dsq-modal::-webkit-scrollbar-track{background:transparent}',
+      '.dsq-panel::-webkit-scrollbar-thumb,.dsq-view-body::-webkit-scrollbar-thumb,.dsq-modal::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:6px;border:2px solid transparent;background-clip:padding-box}',
+      '.dsq-panel::-webkit-scrollbar-thumb:hover,.dsq-view-body::-webkit-scrollbar-thumb:hover,.dsq-modal::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-label-tertiary);background-clip:padding-box}',
+      '.dsq-view-body{scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l2) transparent}',
+      '.dsq-panel>*{width:100%;max-width:1040px;margin:0 auto;flex:0 0 auto}',
+      '.dsq-head{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:2px 2px 0}',
       '.dsq-head-main{flex:1;min-width:0}',
       '.dsq-h-title{font-size:19px;font-weight:600;line-height:1.25;letter-spacing:.2px}',
       '.dsq-h-sub{font-size:12px;color:var(--dsw-alias-label-secondary);margin-top:4px}',
-      '.dsq-head-actions{display:flex;gap:8px;flex:none;align-items:center}',
+      '.dsq-head-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center}',
+      '.dsq-search{flex:1;min-width:0;max-width:420px}',
 
       '.dsq-stats{box-sizing:border-box;display:flex;align-items:center;flex-wrap:nowrap;gap:18px;padding:10px 16px;border-radius:10px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);overflow:hidden}',
       '.dsq-stat{display:flex;align-items:baseline;gap:6px;min-width:0;flex:none}',
@@ -213,6 +252,14 @@ window.__ModuleLoader__.load({
       '.dsq-view-body{flex:1;min-height:0;overflow-y:auto;padding:14px clamp(16px,3vw,28px) 32px;display:flex;flex-direction:column;gap:14px}',
       '.dsq-view-body>*{width:100%;max-width:900px;margin:0 auto}',
       '.dsq-view-sec-title{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;margin-bottom:6px}',
+      '.dsq-session-zone{box-sizing:border-box;width:100%;border:1.5px dashed var(--dsw-alias-border-l2);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;transition:border-color .15s ease,background .15s ease}',
+      '.dsq-session-zone.is-drop{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-layer-2)}',
+      '.dsq-view-sec{box-sizing:border-box;width:100%;border-radius:10px;padding:10px 12px;border:1.5px dashed var(--dsw-alias-border-l2);transition:border-color .15s ease,background .15s ease}',
+      '.dsq-view-list{overflow-y:auto;overflow-x:hidden;max-height:330px;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l2) transparent;padding-right:2px}',
+      '.dsq-view-list::-webkit-scrollbar{width:10px}',
+      '.dsq-view-list::-webkit-scrollbar-track{background:transparent}',
+      '.dsq-view-list::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:6px;border:2px solid transparent;background-clip:padding-box}',
+      '.dsq-view-sec.is-drop{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-layer-2)}',
     ].join('')
 
     function ensureStyle() {
@@ -273,6 +320,7 @@ window.__ModuleLoader__.load({
       chevronRight: 'M6.2 3.6 10.6 8l-4.4 4.4',
       upload: 'M8 11.2V3.4M8 3.4 4.8 6.6M8 3.4l3.2 3.2M3 12.2v.8c0 .6.5 1.1 1.1 1.1h7.8c.6 0 1.1-.5 1.1-1.1v-.8',
       drag: 'M3 4.5h10M3 8h10M3 11.5h10',
+      restore: 'M6 4.5 3.2 7.2 6 9.9M3.4 7.2h5.2a3.9 3.9 0 1 1 0 7.8H6.4',
     }
 
     function Btn(props) {
@@ -379,6 +427,7 @@ window.__ModuleLoader__.load({
               h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.name || s.dirName),
               invalid ? h('span', { className: 'dsq-badge', title: props.t('invalidName') }, '!') : null,
               props.showScope ? h('span', { className: 'dsq-chip' }, s.scope === 'workspace' ? props.t('viewScopeWs') : props.t('viewScopeGlobal')) : null,
+              s.linked ? h('span', { className: 'dsq-chip', title: props.t('unlinkHint') }, props.t('linked')) : null,
               props.shadowed ? h('span', { className: 'dsq-chip', title: props.t('viewShadowed') }, '×') : null,
             ),
             h('div', { className: 'dsq-row-desc', title: s.description }, s.description || props.t('noDescription')),
@@ -391,6 +440,7 @@ window.__ModuleLoader__.load({
           props.onEdit ? h(IconButton, { d: P.pencil, title: props.t('editTitle'), disabled: props.busy, onClick: function () { props.onEdit(s) } }) : null,
           props.onDelete ? h(IconButton, { d: P.trash, title: props.t('deleteTitle'), disabled: props.busy, onClick: function () { props.onDelete(s) } }) : null,
           props.onPreview ? h(Chevron, { open: open, title: props.t('preview'), disabled: props.busy, onClick: function () { props.onPreview(s) } }) : null,
+
           props.onDragStart ? h('span', {
             role: 'button', tabIndex: 0,
             className: 'dsq-iconbtn dsq-drag',
@@ -420,6 +470,7 @@ window.__ModuleLoader__.load({
     }
 
     function SkillGroups(props) {
+      var groupKey = props.groupKey || ''
       var skills = props.skills || []
       var categories = props.categories || []
       if (!skills.length) return h('div', { className: 'dsq-empty' }, props.t('empty'))
@@ -458,17 +509,35 @@ window.__ModuleLoader__.load({
       }
 
       var blocks = []
+      if (uncat.length) {
+        var noneKey = groupKey + ':__uncat'
+        var noneZone = dropZone(groupKey + ':cat:none', function (payload) { props.onDropToCategory(payload, null) })
+        var noneCollapsed = !!props.collapsed[noneKey]
+        blocks.push(h('div', Object.assign({ key: 'cat-none', className: 'dsq-group dsq-cat-zone' }, noneZone),
+          h('div', { className: 'dsq-cat' + (props.dropZone === groupKey + ':cat:none' ? ' is-drop' : '') },
+            h(Chevron, {
+              open: !noneCollapsed,
+              title: noneCollapsed ? props.t('expand') : props.t('collapse'),
+              onClick: function () { props.onCollapseToggle(noneKey) },
+            }),
+            h('span', { className: 'dsq-cat-name' }, props.t('uncategorized')),
+            h('span', { className: 'dsq-cat-count' }, uncat.length + ' ' + props.t('statSkills')),
+          ),
+          noneCollapsed ? null : rows(uncat),
+        ))
+      }
       categories.forEach(function (cat) {
         var members = byCat[cat.id] || []
         var allOn = members.length > 0 && members.every(function (m) { return m.enabled })
-        var isCollapsed = !!props.collapsed[cat.id]
-        var zone = dropZone('cat:' + cat.id, function (payload) { props.onDropToCategory(payload, cat) })
+        var ck = groupKey + ':' + cat.id
+        var isCollapsed = !!props.collapsed[ck]
+        var zone = dropZone(groupKey + ':cat:' + cat.id, function (payload) { props.onDropToCategory(payload, cat) })
         blocks.push(h('div', Object.assign({ key: 'cat-' + cat.id, className: 'dsq-group dsq-cat-zone' }, zone),
-          h('div', { className: 'dsq-cat' + (props.dropZone === 'cat:' + cat.id ? ' is-drop' : '') },
+          h('div', { className: 'dsq-cat' + (props.dropZone === groupKey + ':cat:' + cat.id ? ' is-drop' : '') },
             h(Chevron, {
               open: !isCollapsed,
               title: isCollapsed ? props.t('expand') : props.t('collapse'),
-              onClick: function () { props.onCollapseToggle(cat, !isCollapsed) },
+              onClick: function () { props.onCollapseToggle(ck) },
             }),
             h('span', { className: 'dsq-cat-name', title: cat.name }, cat.name),
             h('span', { className: 'dsq-cat-count' }, members.length + ' ' + props.t('statSkills')),
@@ -480,22 +549,6 @@ window.__ModuleLoader__.load({
         ))
       })
 
-      if (uncat.length) {
-        var noneZone = dropZone('cat:none', function (payload) { props.onDropToCategory(payload, null) })
-        var noneCollapsed = !!props.collapsed['__uncat']
-        blocks.push(h('div', Object.assign({ key: 'cat-none', className: 'dsq-group dsq-cat-zone' }, noneZone),
-          h('div', { className: 'dsq-cat' + (props.dropZone === 'cat:none' ? ' is-drop' : '') },
-            h(Chevron, {
-              open: !noneCollapsed,
-              title: noneCollapsed ? props.t('expand') : props.t('collapse'),
-              onClick: function () { props.onCollapseToggle({ id: '__uncat' }, !noneCollapsed) },
-            }),
-            h('span', { className: 'dsq-cat-name' }, props.t('uncategorized')),
-            h('span', { className: 'dsq-cat-count' }, uncat.length + ' ' + props.t('statSkills')),
-          ),
-          noneCollapsed ? null : rows(uncat),
-        ))
-      }
       return h('div', { className: 'dsq-group' }, blocks)
     }
 
@@ -628,6 +681,77 @@ window.__ModuleLoader__.load({
         ))
     }
 
+    function StorageModal(props) {
+      var st = React.useState(props.initialPath || ''); var path = st[0]; var setPath = st[1]
+      var er = React.useState(''); var err = er[0]; var setErr = er[1]
+      async function save(reset) {
+        props.setBusy(true); setErr('')
+        try { await props.onSave(reset ? '' : path.trim()); props.onClose() }
+        catch (e) { setErr(messageOf(e)) }
+        finally { props.setBusy(false) }
+      }
+      return h(Overlay, { busy: props.busy, onClose: props.onClose },
+        h('div', { className: 'dsq-modal-title' }, props.t('storageTitle')),
+        h('div', { className: 'dsq-field' },
+          h('label', { className: 'dsq-label' }, props.t('storage')),
+          h('input', {
+            className: 'dsq-input', value: path, spellCheck: false, autoFocus: true,
+            placeholder: props.defaultPath,
+            onChange: function (e) { setPath(e.target.value); setErr('') },
+            onKeyDown: function (e) { if (e.key === 'Enter') save(false) },
+            disabled: props.busy,
+          }),
+          h('div', { className: 'dsq-hint' }, props.t('storageHint')),
+          h('div', { className: 'dsq-hint' }, '默认：' + (props.defaultPath || '')),
+        ),
+        err ? h('div', { className: 'dsq-hint dsq-err' }, err) : null,
+        h('div', { className: 'dsq-actions' },
+          h(Btn, { onClick: function () { save(true) }, disabled: props.busy }, props.t('storageDefault')),
+          h(Btn, { onClick: props.onClose, disabled: props.busy }, props.t('cancel')),
+          h(Btn, { variant: 'primary', onClick: function () { save(false) }, disabled: !path.trim() || props.busy }, props.t('save')),
+        ))
+    }
+
+    function TrashModal(props) {
+      var ts = React.useState(null); var items = ts[0]; var setItems = ts[1]
+      var es = React.useState(''); var err = es[0]; var setErr = es[1]
+      React.useEffect(function () {
+        props.load().then(setItems).catch(function (e) { setErr(messageOf(e)) })
+      }, [])
+      async function restore(item) {
+        props.setBusy(true); setErr('')
+        try {
+          await props.onRestore(item)
+          setItems(await props.load())
+          props.notify()
+        } catch (e) { setErr(messageOf(e)) }
+        finally { props.setBusy(false) }
+      }
+      return h(Overlay, { busy: props.busy, onClose: props.onClose },
+        h('div', { className: 'dsq-modal-title' }, props.t('trashTitle')),
+        h('div', { className: 'dsq-hint', style: { marginBottom: 8 } }, props.t('trashHint')),
+        err ? h('div', { className: 'dsq-hint dsq-err' }, err) : null,
+        items === null
+          ? h('div', { className: 'dsq-empty' }, props.t('loading'))
+          : (items.length
+            ? h('div', { className: 'dsq-group' }, items.map(function (it) {
+                return h('div', { key: it.scope + ':' + it.entry, className: 'dsq-row' },
+                  h('div', { className: 'dsq-row-main' },
+                    h('div', { className: 'dsq-row-name' },
+                      h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, it.dirName),
+                      h('span', { className: 'dsq-chip' }, it.scope === 'workspace' ? props.t('viewScopeWs') : props.t('viewScopeGlobal')),
+                    ),
+                    h('div', { className: 'dsq-row-desc' }, props.t('trashWhen') + ' ' + new Date(it.at).toLocaleString()),
+                  ),
+                  h(Btn, { onClick: function () { restore(it) }, disabled: props.busy }, props.t('trashRestore')),
+                )
+              }))
+            : h('div', { className: 'dsq-empty' }, props.t('trashEmpty'))),
+        h('div', { className: 'dsq-actions' },
+          h(Btn, { onClick: props.onClose, disabled: props.busy }, props.t('cancel'))),
+      )
+    }
+
     function translator(raw) {
       return function (k) {
         var v = typeof raw === 'function' ? raw(k) : null
@@ -650,11 +774,13 @@ window.__ModuleLoader__.load({
       var xp = React.useState({}); var expanded = xp[0]; var setExpanded = xp[1]
       var pp = React.useState({}); var previews = pp[0]; var setPreviews = pp[1]
       var cp = React.useState({}); var collapsed = cp[0]; var setCollapsed = cp[1]
+      var sq = React.useState(''); var query = sq[0]; var setQuery = sq[1]
       var dz = React.useState(null); var dropZone = dz[0]; var setDropZone = dz[1]
       var dk = React.useState(null); var draggingKey = dk[0]; var setDraggingKey = dk[1]
       var payloadRef = React.useRef(null)
       var queueRef = React.useRef([])
       var fileRef = React.useRef(null)
+      var panelRef = React.useRef(null)
 
       function onPickFiles(e) {
         var picked = e && e.target && e.target.files ? Array.prototype.slice.call(e.target.files) : []
@@ -664,7 +790,7 @@ window.__ModuleLoader__.load({
         if (e && e.target) e.target.value = ''
       }
 
-      function query() { return wsPath ? 'workspace=' + encodeURIComponent(wsPath) : '' }
+
 
       /** 当前展示数据对应的工作区路径（以服务端回包为准，避免切换瞬间读到旧 state）。 */
       function activeWs() {
@@ -685,6 +811,18 @@ window.__ModuleLoader__.load({
       }
 
       React.useEffect(function () { load(false) }, [])
+
+      React.useLayoutEffect(function () {
+        function fit() {
+          var el = panelRef.current
+          if (!el || typeof window === 'undefined') return
+          var top = el.getBoundingClientRect().top
+          el.style.maxHeight = Math.max(220, Math.floor(window.innerHeight - top - 10)) + 'px'
+        }
+        fit()
+        window.addEventListener('resize', fit)
+        return function () { window.removeEventListener('resize', fit) }
+      }, [])
       React.useEffect(function () {
         if (!toast) return undefined
         var timer = setTimeout(function () { setToast('') }, 2600)
@@ -739,12 +877,12 @@ window.__ModuleLoader__.load({
         }
       }
 
-      function toggleCollapse(cat) {
-        setCollapsed(function (c) { var n = Object.assign({}, c); if (n[cat.id]) delete n[cat.id]; else n[cat.id] = true; return n })
+      function toggleCollapse(key) {
+        setCollapsed(function (c) { var n = Object.assign({}, c); if (n[key]) delete n[key]; else n[key] = true; return n })
       }
 
       function onDragStart(e, s) {
-        var payload = { scope: s.scope, dirName: s.dirName }
+        var payload = { scope: s.scope, dirName: s.dirName, name: s.name || s.dirName, mode: s.mode || 'available' }
         payloadRef.current = payload
         DRAG_STATE = payload
         setDraggingKey(s.scope + ':' + s.dirName)
@@ -778,6 +916,7 @@ window.__ModuleLoader__.load({
             targetScope: targetScope, categoryId: categoryId || '',
             workspacePath: activeWs(),
             targetWorkspace: targetWorkspace || '',
+            mode: payload.mode || 'available',
           })
           await refresh()
           setToast(message)
@@ -805,7 +944,20 @@ window.__ModuleLoader__.load({
           .catch(function (e) { setToast(messageOf(e)) })
       }
 
-      function openDelete(s) { setModal({ kind: 'delete', scope: s.scope, dirName: s.dirName, name: s.name || s.dirName }) }
+      function openStorage() { setModal({ kind: 'storage', path: (data && data.globalRoot) || '' }) }
+
+      function loadTrashScope(scope) {
+        var wpath = scope === 'workspace' ? activeWs() : ''
+        return getJson(ROUTE + '/trash?scope=' + scope + (wpath ? '&workspace=' + encodeURIComponent(wpath) : ''))
+          .then(function (r) { return (r.items || []).map(function (x) { return Object.assign({ scope: scope }, x) }) })
+          .catch(function () { return [] })
+      }
+      function loadTrash() {
+        var jobs = [loadTrashScope('global')]
+        if (activeWs()) jobs.push(loadTrashScope('workspace'))
+        return Promise.all(jobs).then(function (parts) { return [].concat.apply([], parts) })
+      }
+      function openDelete(s) { setModal({ kind: 'delete', scope: s.scope, dirName: s.dirName, name: s.name || s.dirName, linked: !!s.linked }) }
       function openCategory(scope, cat) {
         if (scope === 'workspace' && !wsPath) { setToast(t('workspaceNone')); return }
         setModal({ kind: 'category', scope: scope, cat: cat || null })
@@ -858,9 +1010,19 @@ window.__ModuleLoader__.load({
         else setToast(t('dropHere'))
       }
 
-      var globalSkills = (data && data.global ? data.global.skills : []).map(function (s) { return Object.assign({}, s, { scope: 'global' }) })
+
+
+      var needle = String(query || '').trim().toLowerCase()
+      function hit(s) {
+        if (!needle) return true
+        return (String(s.name || '') + ' ' + String(s.dirName || '') + ' ' + String(s.description || '')).toLowerCase().indexOf(needle) >= 0
+      }
+
+      var globalSkills = (data && data.global ? data.global.skills : [])
+        .map(function (s) { return Object.assign({}, s, { scope: 'global' }) })
+        .filter(hit)
       var globalCats = (data && data.global ? data.global.categories : []).map(function (c) { return Object.assign({}, c, { scope: 'global' }) })
-      var wsSkills = (data && data.workspace ? data.workspace.skills : []).map(function (s) { return Object.assign({}, s, { scope: 'workspace' }) })
+      var wsSkills = (data && data.workspace ? data.workspace.skills : []).map(function (s) { return Object.assign({}, s, { scope: 'workspace' }) }).filter(hit)
       var wsCats = (data && data.workspace ? data.workspace.categories : []).map(function (c) { return Object.assign({}, c, { scope: 'workspace' }) })
 
       var totalSkills = globalSkills.length + wsSkills.length
@@ -956,8 +1118,8 @@ window.__ModuleLoader__.load({
             scope === 'workspace' ? renderWorkspaceFolders((data && data.workspaces) || []) : null,
             scope === 'workspace' && !wsPath
               ? h('div', { className: 'dsq-empty' }, t('workspaceNone'))
-              : h(SkillGroups, {
-                skills: skills, categories: cats, t: t, busy: busy,
+              : h('div', { className: 'dsq-list-scroll ' + (scope === 'global' ? 'is-capped' : 'is-free') }, h(SkillGroups, {
+                skills: skills, categories: cats, groupKey: scope, t: t, busy: busy,
                 expanded: expanded, previews: previews, collapsed: collapsed,
                 dropZone: dropZone, draggingKey: draggingKey, readDragPayload: readDragPayload,
                 onDragStart: onDragStart, onDragEnd: onDragEnd,
@@ -968,7 +1130,7 @@ window.__ModuleLoader__.load({
                 onCategoryToggle: function (cat, on) { toggleCategory(scope, cat, on) },
                 onCategoryRename: function (cat) { openCategory(scope, cat) },
                 onCategoryDelete: function (cat) { setModal({ kind: 'catDelete', scope: scope, cat: cat }) },
-              }),
+              })),
           ),
         )
       }
@@ -1034,9 +1196,30 @@ window.__ModuleLoader__.load({
             finally { setBusy(false) }
           },
         })
+        else if (modal.kind === 'trash') modalView = h(TrashModal, {
+          t: t, busy: busy, setBusy: setBusy, load: loadTrash,
+          onClose: function () { setModal(null) },
+          notify: function () { setToast(t('trashRestored')); refresh() },
+          onRestore: async function (item) {
+            await postJson('/trash', {
+              scope: item.scope, entry: item.entry, dirName: item.dirName,
+              workspacePath: item.scope === 'workspace' ? activeWs() : '',
+            })
+          },
+        })
+        else if (modal.kind === 'storage') modalView = h(StorageModal, {
+          t: t, busy: busy, setBusy: setBusy,
+          initialPath: modal.path, defaultPath: (data && data.defaultGlobalRoot) || '',
+          onClose: function () { setModal(null) },
+          onSave: async function (next) {
+            await postJson('/settings', { globalRoot: next })
+            setToast(t('storageSaved')); refresh()
+          },
+        })
         else if (modal.kind === 'delete') modalView = h(ConfirmModal, {
           t: t, busy: busy, title: t('deleteTitle'),
-          message: t('deleteConfirm').replace('{name}', modal.name), hint: t('deleteHint'),
+          message: t('deleteConfirm').replace('{name}', modal.name),
+          hint: modal.linked ? t('unlinkHint') : t('deleteHint'),
           onClose: function () { setModal(null) },
           onConfirm: async function () {
             setBusy(true)
@@ -1056,7 +1239,7 @@ window.__ModuleLoader__.load({
           : h('div', { className: 'dsq-toast' }, toast)
       }
 
-      return h('div', { className: 'dsq dsq-panel', onDragEnd: onDragEnd },
+      return h('div', { ref: panelRef, className: 'dsq dsq-panel', onDragEnd: onDragEnd },
         modalView,
         h('div', { className: 'dsq-head' },
           h('div', { className: 'dsq-head-main' },
@@ -1070,8 +1253,16 @@ window.__ModuleLoader__.load({
               ref: fileRef, type: 'file', accept: '.md,text/markdown', multiple: true,
               style: { display: 'none' }, onChange: onPickFiles,
             }),
+            h(Btn, { icon: h(PathIcon, { d: P.trash, size: 12 }), onClick: function () { setModal({ kind: 'trash' }) }, disabled: busy }, t('trash')),
+            h(Btn, { icon: h(PathIcon, { d: P.folder, size: 12 }), onClick: openStorage, disabled: busy }, t('storage')),
             h(Btn, { icon: h(PathIcon, { d: P.refresh, size: 12, stroke: true }), onClick: function () { load(true) }, disabled: loading || busy, title: t('refresh') }),
           ),
+        ),
+        h('div', { className: 'dsq-head-search' },
+          h('input', {
+            className: 'dsq-input dsq-search', value: query, placeholder: t('searchSkills'),
+            onChange: function (e) { setQuery(e.target.value) },
+          }),
         ),
         h('div', {
           className: 'dsq-drop' + (drag ? ' is-over' : ''),
@@ -1108,6 +1299,30 @@ window.__ModuleLoader__.load({
       var xp = React.useState({}); var expanded = xp[0]; var setExpanded = xp[1]
       var pp = React.useState({}); var previews = pp[0]; var setPreviews = pp[1]
 
+      var nt = React.useState(''); var notice = nt[0]; var setNotice = nt[1]
+      React.useEffect(function () {
+        if (!notice) return undefined
+        var timer = setTimeout(function () { setNotice('') }, 2600)
+        return function () { clearTimeout(timer) }
+      }, [notice])
+
+
+
+      async function setSessionMode(s, mode) {
+        if (!sessionId) { setNotice(t('noSession')); return }
+        setBusy(true)
+        try {
+          await postJson('/session', {
+            action: 'mode', sessionId: sessionId,
+            scope: s.scope || 'global', dirName: s.dirName, mode: mode,
+          })
+          await load()
+        } catch (e) { setNotice(messageOf(e)) }
+        finally { setBusy(false) }
+      }
+
+
+
       async function load() {
         setLoading(true); setError('')
         try { setData(await getJson(ROUTE + '/state' + (sessionId ? '?sessionId=' + encodeURIComponent(sessionId) : ''))) }
@@ -1117,14 +1332,13 @@ window.__ModuleLoader__.load({
 
       React.useEffect(function () { load() }, [sessionId])
 
-      async function setMode(s, mode) {
-        setBusy(true)
-        try {
-          await postJson('/mode', { scope: s.scope, dirName: s.dirName, mode: mode, sessionId: sessionId })
-          await load()
-        } catch (e) { /* 静默 */ }
-        finally { setBusy(false) }
-      }
+      React.useEffect(function () {
+        var root = document.documentElement
+        root.setAttribute('data-dsq-skills-view', '1')
+        return function () { root.removeAttribute('data-dsq-skills-view') }
+      }, [])
+
+
 
       async function togglePreview(s) {
         var key = s.scope + ':' + s.dirName
@@ -1145,16 +1359,24 @@ window.__ModuleLoader__.load({
       var wsSkills = ((data && data.workspace && data.workspace.skills) || []).map(function (s) { return Object.assign({}, s, { scope: 'workspace' }) })
       var globalSkills = ((data && data.global && data.global.skills) || []).map(function (s) { return Object.assign({}, s, { scope: 'global' }) })
       var wsNames = {}
-      wsSkills.forEach(function (s) { wsNames[s.dirName] = true })
+      wsSkills.forEach(function (s) { wsNames[s.dirName] = true; if (s.name) wsNames[s.name] = true })
 
-      function row(s, shadowed) {
+      function row(s) {
         var key = s.scope + ':' + s.dirName
+        // 会话有效挡位：有覆盖用覆盖值，否则沿用总面板（全局）状态
+        var view = Object.assign({}, s, { mode: s.sessionOverride ? s.sessionMode : s.mode })
         return h(SkillRow, {
-          key: key, skill: s, t: t, busy: busy, showScope: true, shadowed: shadowed,
+          key: key, skill: view, t: t, busy: busy, showScope: false,
           expanded: !!expanded[key], preview: previews[key],
-          onMode: setMode, onPreview: togglePreview,
+          onMode: setSessionMode, onPreview: togglePreview,
         })
       }
+
+      var pinnedNames = {}
+      ;((data && data.sessionPins) || []).forEach(function (p) {
+        if (p.name) pinnedNames[p.name] = true
+        if (p.dirName) pinnedNames[p.dirName] = true
+      })
 
       function pool(list) {
         var q = filter.trim().toLowerCase()
@@ -1174,33 +1396,31 @@ window.__ModuleLoader__.load({
       else if (error) body = h('div', null,
         h('div', { className: 'dsq-empty' }, error),
         h(Btn, { onClick: load }, t('retry')))
-      else body = h(React.Fragment, null,
-        h('div', null,
-          h('div', { className: 'dsq-view-sec-title' },
-            h(PathIcon, { d: P.folder, size: 12 }),
-            h('span', null, t('workspaceSection')),
-            h('span', { className: 'dsq-card-hint' }, t('workspaceHint')),
-            h('span', { className: 'dsq-card-count' }, wsShown.length + ''),
-          ),
-          data && data.workspace
-            ? (wsShown.length ? h('div', { className: 'dsq-group' }, wsShown.map(function (s) { return row(s, false) })) : h('div', { className: 'dsq-empty' }, t('empty')))
-            : h('div', { className: 'dsq-empty' }, t('workspaceNone')),
+      else body = h('div', { className: 'dsq-view-sec' },
+        h('div', { className: 'dsq-view-sec-title' },
+          h(PathIcon, { d: P.folder, size: 12 }),
+          h('span', null, t('globalSection')),
+          h('span', { className: 'dsq-card-hint' }, t('sessionHint')),
+          h('span', { className: 'dsq-card-count' }, gShown.length + ''),
         ),
-        h('div', null,
-          h('div', { className: 'dsq-view-sec-title' },
-            h(PathIcon, { d: P.folder, size: 12 }),
-            h('span', null, t('globalSection')),
-            h('span', { className: 'dsq-card-hint' }, t('globalHint')),
-            h('span', { className: 'dsq-card-count' }, gShown.length + ''),
-          ),
-          gShown.length
-            ? h('div', { className: 'dsq-group' }, gShown.map(function (s) { return row(s, !!wsNames[s.dirName]) }))
-            : h('div', { className: 'dsq-empty' }, filter.trim() ? t('viewNoMatch') : t('empty')),
-        ))
+        gShown.length
+          ? h('div', { className: 'dsq-group dsq-view-list' }, gShown.map(function (s) { return row(s) }))
+          : h('div', { className: 'dsq-empty' }, filter.trim() ? t('viewNoMatch') : t('empty')),
+      )
 
-      var enabledN = wsSkills.filter(function (s) { return s.enabled }).length + globalSkills.filter(function (s) { return s.enabled }).length
+
+
+
+
+      var noticeNode = null
+      if (notice) {
+        noticeNode = NativeToast
+          ? ReactDOM.createPortal(h(NativeToast, { text: notice, onDone: function () { setNotice('') } }), document.body)
+          : h('div', { className: 'dsq-toast' }, notice)
+      }
 
       return h('div', { className: 'dsq dsq-view' },
+        noticeNode,
         h('div', { className: 'dsq-view-head' },
           h('div', { className: 'dsq-view-head-main' },
             h('div', { className: 'dsq-h-title' }, t('viewTitle')),

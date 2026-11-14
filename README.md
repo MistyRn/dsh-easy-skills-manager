@@ -57,6 +57,12 @@ DSH 技能快捷管理器：把技能放在 DSH 自己的目录里，从左侧�
 
 > 分类是逻辑分组，成员仍平铺在技能根下——DSH 内置 `skill-filesystem` 只扫描根目录一层，放进子目录会导致技能不被加载。分类归属存于 `<DSH_HOME>/dsh-easy-skills-manager.state.json`。
 
+## 回收站
+
+删除只是把目录 `rename` 进技能根下的 `.trash`，正文不动。左侧栏「回收站」按作用域列出条目，点「还原」即可搬回原位；目标已有同名技能时返回 409，不会覆盖。
+
+常驻技能受 `30 个 / 60000 字符` 的注入预算限制。超出时不再静默丢弃，注入文本末尾会列出本轮没进去的技能名。
+
 ## 安装
 
 已按 profile 直装方式装入 web profile：
@@ -72,8 +78,13 @@ DSH 技能快捷管理器：把技能放在 DSH 自己的目录里，从左侧�
 | --- | --- |
 | `GET /plugins/dsh-easy-skills-manager/state` | 技能与分类 |
 | `GET /plugins/dsh-easy-skills-manager/skill` | 单个技能正文 |
-| `POST /plugins/dsh-easy-skills-manager/toggle` | 单个技能启停 |
+| `POST /plugins/dsh-easy-skills-manager/mode` | 三挡切换：off / available / pinned |
+| `POST /plugins/dsh-easy-skills-manager/bulk` | 整区批量切换 |
+| `POST /plugins/dsh-easy-skills-manager/copy` | 跨作用域逻辑链接 |
+| `POST /plugins/dsh-easy-skills-manager/session` | 会话级覆盖 |
+| `GET/POST /plugins/dsh-easy-skills-manager/settings` | 全局技能根 |
 | `POST /plugins/dsh-easy-skills-manager/import` | 导入或新建 |
 | `POST /plugins/dsh-easy-skills-manager/update` | 编辑 |
 | `POST /plugins/dsh-easy-skills-manager/delete` | 删除到 .trash |
+| `GET/POST /plugins/dsh-easy-skills-manager/trash` | 回收站列表 / 还原 |
 | `POST /plugins/dsh-easy-skills-manager/category` | 分类 create / rename / delete / assign / toggle |

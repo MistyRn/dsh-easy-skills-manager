@@ -1,6 +1,6 @@
 {
   "name": "dsh-easy-skills-manager",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "DSH 技能快捷管理器：左侧栏与对话顶部工具栏统一开关全局/工作区技能，支持拖入 .md 导入并手动命名。",
   "license": "MIT",
   "author": "DSH user",
