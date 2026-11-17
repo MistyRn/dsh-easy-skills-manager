@@ -62,6 +62,11 @@ window.__ModuleLoader__.load({
       viewSearch: '搜索技能…', viewNoMatch: '没有匹配的技能', viewScopeWs: '工作区', viewScopeGlobal: '已安装',
       viewShadowed: '被工作区同名技能覆盖',
       sessionSkills: '本会话技能', sessionHint: '只对本会话生效，不改全局设置',
+      heroPreset: '技能', heroPresetTitle: '新会话技能',
+      heroPresetHint: '先在这里选好，发出第一条消息即生效。只影响这一个新会话，不改全局设置。',
+      heroPresetDone: '已设定', heroPresetClear: '清除预置', heroPresetCleared: '预置已清除',
+      heroPresetEmpty: '预置为空，新会话将沿用总面板状态',
+      heroPresetBind: '仅对工作区生效：',
       noSession: '当前会话尚未就绪',
       globalAlreadyOn: '该技能已在全局开启，无需重复加入本会话',
       dropToWorkspace: '把下面的技能拖到这里，仅在本工作区生效',
@@ -108,6 +113,11 @@ window.__ModuleLoader__.load({
       viewSearch: 'Search skills…', viewNoMatch: 'No matching skills', viewScopeWs: 'Workspace', viewScopeGlobal: 'Installed',
       viewShadowed: 'Overridden by a workspace skill of the same name',
       sessionSkills: 'Session skills', sessionHint: 'Applies to this conversation only',
+      heroPreset: 'Skills', heroPresetTitle: 'Skills for the new conversation',
+      heroPresetHint: 'Choose here first; it takes effect once you send the first message. Affects this new conversation only.',
+      heroPresetDone: 'Saved', heroPresetClear: 'Clear preset', heroPresetCleared: 'Preset cleared',
+      heroPresetEmpty: 'No preset; the new conversation follows the panel state',
+      heroPresetBind: 'Applies only in workspace:',
       noSession: 'This conversation is not ready yet',
       globalAlreadyOn: 'This skill is already enabled globally; no need to add it here',
       dropToWorkspace: 'Drag a skill here to use it in this workspace only',
@@ -260,6 +270,8 @@ window.__ModuleLoader__.load({
       '.dsq-view-list::-webkit-scrollbar-track{background:transparent}',
       '.dsq-view-list::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2);border-radius:6px;border:2px solid transparent;background-clip:padding-box}',
       '.dsq-view-sec.is-drop{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-layer-2)}',
+      '.dsq-hero{position:relative;display:inline-flex;align-items:center;flex:none}',
+      '.dsq-hero-toast{position:absolute;top:calc(100% + 6px);right:0;z-index:5;white-space:nowrap;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:6px;padding:4px 8px;font-size:11px;color:var(--dsw-alias-label-secondary)}',
     ].join('')
 
     function ensureStyle() {
@@ -1439,6 +1451,125 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * 首页入口：空白会话还没有 sessionId，conversation.view 不渲染，
+     * 所以挡位先存成 host 侧预置，首个 turn 前再转成本会话覆盖。
+     */
+    function HeroSkills(props) {
+      ensureStyle()
+      var t = translator(props && props.t)
+      var op = React.useState(false); var open = op[0]; var setOpen = op[1]
+      var dp = React.useState(null); var data = dp[0]; var setData = dp[1]
+      var pp = React.useState([]); var preset = pp[0]; var setPreset = pp[1]
+      var lp = React.useState(false); var loading = lp[0]; var setLoading = lp[1]
+      var ep = React.useState(''); var error = ep[0]; var setError = ep[1]
+      var bp = React.useState(false); var busy = bp[0]; var setBusy = bp[1]
+      var qp = React.useState(''); var filter = qp[0]; var setFilter = qp[1]
+      var nt = React.useState(''); var notice = nt[0]; var setNotice = nt[1]
+      var wp = React.useState(''); var wsPath = wp[0]; var setWsPath = wp[1]
+
+      React.useEffect(function () {
+        if (!notice) return undefined
+        var timer = setTimeout(function () { setNotice('') }, 2600)
+        return function () { clearTimeout(timer) }
+      }, [notice])
+
+      async function load() {
+        setLoading(true); setError('')
+        try {
+          var both = await Promise.all([
+            getJson(ROUTE + '/state'),
+            getJson(ROUTE + '/preset?workspace='),
+          ])
+          setData(both[0])
+          setPreset((both[1] && both[1].pins) || [])
+          setWsPath((both[1] && both[1].workspacePath) || '')
+        } catch (e) { setError(messageOf(e)) }
+        finally { setLoading(false) }
+      }
+
+      React.useEffect(function () { if (open) load() }, [open])
+
+      function presetMode(s) {
+        for (var i = 0; i < preset.length; i += 1) {
+          if (preset[i].dirName === s.dirName && preset[i].scope === (s.scope || 'global')) return preset[i].mode
+        }
+        return s.mode
+      }
+
+      async function setMode(s, mode) {
+        setBusy(true)
+        try {
+          var res = await postJson('/preset', {
+            workspacePath: wsPath, scope: s.scope || 'global', dirName: s.dirName, mode: mode,
+          })
+          setPreset((res && res.pins) || [])
+          setNotice(t('heroPresetDone'))
+        } catch (e) { setNotice(messageOf(e)) }
+        finally { setBusy(false) }
+      }
+
+      async function clearPreset() {
+        setBusy(true)
+        try {
+          await postJson('/preset', { workspacePath: wsPath, clear: true })
+          setPreset([])
+          setNotice(t('heroPresetCleared'))
+        } catch (e) { setNotice(messageOf(e)) }
+        finally { setBusy(false) }
+      }
+
+      var skills = ((data && data.global && data.global.skills) || []).map(function (s) {
+        return Object.assign({}, s, { scope: 'global' })
+      })
+      var q = filter.trim().toLowerCase()
+      var shown = q ? skills.filter(function (s) {
+        return String(s.name || '').toLowerCase().indexOf(q) >= 0 ||
+          String(s.dirName || '').toLowerCase().indexOf(q) >= 0 ||
+          String(s.description || '').toLowerCase().indexOf(q) >= 0
+      }) : skills
+
+      var count = preset.length
+      var modal = null
+      if (open) {
+        modal = h(Overlay, { busy: busy, onClose: function () { setOpen(false) } },
+          h('div', { className: 'dsq-modal-title' }, t('heroPresetTitle')),
+          h('div', { className: 'dsq-hint', style: { marginBottom: 10 } }, t('heroPresetHint')),
+          wsPath ? h('div', { className: 'dsq-hint', style: { marginBottom: 8 } }, t('heroPresetBind') + ' ' + wsPath) : null,
+          h('input', {
+            className: 'dsq-input', value: filter, placeholder: t('viewSearch'),
+            onChange: function (e) { setFilter(e.target.value) },
+          }),
+          error ? h('div', { className: 'dsq-hint dsq-err', style: { marginTop: 8 } }, error) : null,
+          loading && !data ? h('div', { className: 'dsq-empty' }, t('loading')) : null,
+          h('div', { className: 'dsq-group dsq-view-list', style: { marginTop: 10 } },
+            shown.length ? shown.map(function (s) {
+              var key = s.scope + ':' + s.dirName
+              return h(SkillRow, {
+                key: key, skill: Object.assign({}, s, { mode: presetMode(s) }),
+                t: t, busy: busy, showScope: false,
+                onMode: function (row, mode) { setMode(row, mode) },
+              })
+            }) : h('div', { className: 'dsq-empty' }, filter.trim() ? t('viewNoMatch') : t('empty'))),
+          h('div', { className: 'dsq-hint', style: { marginTop: 8 } },
+            count ? t('sessionHint') : t('heroPresetEmpty')),
+          h('div', { className: 'dsq-actions' },
+            h(Btn, { onClick: clearPreset, disabled: busy || !count }, t('heroPresetClear')),
+            h(Btn, { variant: 'primary', onClick: function () { setOpen(false) }, disabled: busy }, t('confirm')),
+          ))
+      }
+
+      return h('div', { className: 'dsq dsq-hero' },
+        h(Btn, {
+          onClick: function () { setOpen(true) },
+          title: t('heroPreset'),
+          icon: h(StarMark, { size: 12 }),
+        }, t('heroPreset') + (count ? ' · ' + count : '')),
+        modal,
+        notice ? h('div', { className: 'dsq-hero-toast' }, notice) : null,
+      )
+    }
+
     function apply(ctx) {
       ensureStyle()
       ctx.effect(function () { return ctx.locale.register(NS, { zh: zh, en: en }) }, 'dsh-easy-skills-manager: dictionaries')
@@ -1454,6 +1585,16 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('main', function () {
         return ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS }, SidebarPanel)
       })
+
+      // 该 slot 属首页（空白会话）入口；老版本 DSH 没有它时静默跳过，不影响面板
+      try {
+        ctx.slots.inject('conversation.hero.options', function () {
+          return ctx.slots.register({
+            name: 'conversation.hero.options', id: 'skills-preset', order: 30, locale: NS,
+            label: function () { try { return ctx.locale.bind(NS)('heroPreset') } catch (e) { return '技能' } },
+          }, HeroSkills)
+        })
+      } catch (e) { /* 无该 slot 即跳过 */ }
 
       ctx.slots.inject('conversation.view', function () {
         return ctx.slots.register({

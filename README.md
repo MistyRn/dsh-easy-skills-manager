@@ -51,6 +51,14 @@ DSH 技能快捷管理器：把技能放在 DSH 自己的目录里，从左侧�
 
 在会话标签行与「对话 / 轨迹 / 上下文 / 编队」并列，列出本会话可用的全部技能并逐项开关；工作区同名技能覆盖全局时标 `×`。
 
+### 首页「技能」预置
+
+空白会话不渲染 `conversation.view`，故首页（尚未发出消息时）在右上角工具行另立「技能」入口：先选好三挡状态，存入 `state.json` 的 `presets`；首个 turn 之前（`agent/created`，必要时补一记 `agent/pre-step`）才转成该会话的覆盖，随即删除预置。
+
+- 只影响这一个新会话，不改全局设置；
+- 预置按工作区归置（`ws:<路径>`），换了工作区就不套用，预置留在原处等它自己的工作区；
+- 它是会话覆盖的预制件，故仍服从 `会话 > 工作区 > 全局` 的优先级与 50 条上限。
+
 ## 开关的实现
 
 开关只重命名 `SKILL.md` ↔ `SKILL.md.disabled`，**从不改动正文**。
@@ -82,6 +90,7 @@ DSH 技能快捷管理器：把技能放在 DSH 自己的目录里，从左侧�
 | `POST /plugins/dsh-easy-skills-manager/bulk` | 整区批量切换 |
 | `POST /plugins/dsh-easy-skills-manager/copy` | 跨作用域逻辑链接 |
 | `POST /plugins/dsh-easy-skills-manager/session` | 会话级覆盖 |
+| `GET/POST /plugins/dsh-easy-skills-manager/preset` | 首页新会话预置（读 / 写 / 清） |
 | `GET/POST /plugins/dsh-easy-skills-manager/settings` | 全局技能根 |
 | `POST /plugins/dsh-easy-skills-manager/import` | 导入或新建 |
 | `POST /plugins/dsh-easy-skills-manager/update` | 编辑 |

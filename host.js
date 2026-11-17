@@ -163,6 +163,48 @@ function sessionBucket(state, sessionId) {
   return bucket
 }
 
+// ── 新会话预置：详情页先选，首个 turn 前转成该会话的覆盖 ─────────────────────
+
+function normWorkspacePath(value) {
+  return String(value == null ? '' : value).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+/** 无工作区路径时落到通配键 *：首页还没选工作区也能先存预置。 */
+function presetKey(workspacePath) {
+  const norm = normWorkspacePath(workspacePath)
+  return norm ? 'ws:' + norm : '*'
+}
+
+/** 只读查预置：不新建任何条目，GET 不留痕。 */
+function peekPreset(state, workspacePath) {
+  const presets = state.presets && typeof state.presets === 'object' ? state.presets : null
+  if (!presets) return []
+  const bucket = presets[presetKey(workspacePath)]
+  return bucket && Array.isArray(bucket.pins) ? bucket.pins : []
+}
+
+function presetBucket(state, workspacePath) {
+  state.presets = state.presets && typeof state.presets === 'object' ? state.presets : {}
+  const key = presetKey(workspacePath)
+  if (!state.presets[key] || typeof state.presets[key] !== 'object') state.presets[key] = { pins: [], at: 0 }
+  const bucket = state.presets[key]
+  if (!Array.isArray(bucket.pins)) bucket.pins = []
+  return bucket
+}
+
+/** agent 所属工作区：优先会话头里的 cwd，退回工作区登记表。 */
+async function agentWorkspacePath(ctx, agent) {
+  try {
+    const session = agent && agent.session
+    const cwd = session && (session.cwd || (session.header && session.header.cwd))
+    if (typeof cwd === 'string' && cwd.trim()) return cwd
+  } catch { /* 会话头不可读时回退 */ }
+  try {
+    const active = await resolveActiveWorkspace(ctx, agent && agent.id, null)
+    return (active && active.path) || ''
+  } catch { return '' }
+}
+
 /** 某作用域内技能当前的实际挡位（用于判断会话覆盖是否已与继承值相同）。 */
 async function inheritedMode(state, pin) {
   const key = pin.scope === 'workspace' ? scopeKey('workspace', pin.workspacePath) : 'global'
@@ -175,18 +217,53 @@ async function inheritedMode(state, pin) {
   } catch { return null }
 }
 
-/** 全局技能被删除/停用时，清掉所有会话对它的覆盖。 */
+/** 全局技能被删除/停用时，清掉所有会话与预置对它的覆盖。 */
 function dropOverridesForSkill(state, scope, dirName) {
-  if (!state.sessions || typeof state.sessions !== 'object') return 0
   let removed = 0
-  for (const key of Object.keys(state.sessions)) {
-    const session = state.sessions[key]
-    if (!session || !Array.isArray(session.pins)) continue
-    const before = session.pins.length
-    session.pins = session.pins.filter((p) => !(p.scope === scope && p.dirName === dirName))
-    removed += before - session.pins.length
+  const strip = (holder) => {
+    if (!holder || !Array.isArray(holder.pins)) return
+    const before = holder.pins.length
+    holder.pins = holder.pins.filter((p) => !(p.scope === scope && p.dirName === dirName))
+    removed += before - holder.pins.length
+  }
+  if (state.sessions && typeof state.sessions === 'object') {
+    for (const key of Object.keys(state.sessions)) strip(state.sessions[key])
+  }
+  if (state.presets && typeof state.presets === 'object') {
+    for (const key of Object.keys(state.presets)) {
+      const bucket = state.presets[key]
+      strip(bucket)
+      if (bucket && Array.isArray(bucket.pins) && !bucket.pins.length) delete state.presets[key]
+    }
   }
   return removed
+}
+
+/**
+ * 写入一条会话/预置覆盖。与继承挡位相同则不保留覆盖。
+ * pins 原地修改；返回是否发生变更。
+ */
+async function setPinMode(state, pins, ref) {
+  const { scope, dirName, mode } = ref
+  const workspacePath = scope === 'workspace' ? String(ref.workspacePath || '') : null
+  const same = (p) => p.dirName === dirName && p.scope === scope
+  const pinRef = { scope, workspacePath: ref.workspacePath || null, dirName }
+  const inherited = await inheritedMode(state, pinRef)
+  const index = pins.findIndex(same)
+  const existing = index >= 0 ? pins[index] : null
+  if (inherited !== null && inherited === mode) {
+    if (existing) pins.splice(index, 1)
+    return false
+  }
+  if (existing) { existing.mode = mode; return false }
+  if (pins.length >= 50) throw new HttpError(400, '技能覆盖最多 50 条')
+  const at = pinResolve(state, pinRef)
+  const live = join(at.root, at.dirName, SKILL_FILE)
+  const dead = join(at.root, at.dirName, SKILL_FILE + DISABLED_SUFFIX)
+  // 允许在会话/预置里启用一个在总面板被停用的技能
+  if (!(await pathIsFile(live)) && !(await pathIsFile(dead))) throw new HttpError(404, '技能不存在')
+  pins.push({ scope, workspacePath, dirName, mode })
+  return true
 }
 
 /** 会话卡片实际指向的物理位置：工作区/全局里的逻辑链接要穿过去。 */
@@ -500,8 +577,11 @@ async function buildState(ctx, sessionId, workspacePath) {
       if (pin) { skill.sessionMode = pin.mode; skill.sessionOverride = true }
     }
   }
+  // 首页预置：无会话时前端据此初始化开关，与总面板状态区分
+  const presetPins = peekPreset(state, workspace ? workspace.path : '')
   return {
     sessionPins,
+    presetPins,
     globalRoot,
     defaultGlobalRoot: root,
     customGlobalRoot: globalRoot !== root,
@@ -693,6 +773,9 @@ const ACTIVE_ORDER = 11060
 const ACTIVE_MAX_SKILLS = 30
 const ACTIVE_MAX_CHARS = 60000
 const activeSessions = new Map()
+// 有预置待套用时不读盘：空会话可能早已建好 agent（agent/created 已过去），
+// 所以首个 turn 的 pre-step 是最后的兜底时机。
+let presetPending = false
 let hostCtx = null
 let activeTimer = null
 let activeDirty = false
@@ -722,14 +805,16 @@ export async function collectEnabledDocs(ctx, sessionId) {
   }
 
   const docs = []
-  const push = async (scope, root, bucket) => {
+  const push = async (scope, root, bucket, skip) => {
     const b = bucket || { categories: [], members: {}, pinned: {}, links: {} }
     const scan = await scanRoot(root, b)
     for (const skill of scan.skills) {
       if (skill.mode !== 'pinned') continue
       try {
         const doc = await readSkillDoc(root, skill.dirName)
-        if (!overridden.has(doc.name)) docs.push(doc)
+        if (overridden.has(doc.name)) continue
+        if (skip && skip.has(doc.name)) continue
+        docs.push(doc)
       } catch { /* 单个读取失败不影响其他 */ }
     }
     const links = b.links || {}
@@ -738,16 +823,24 @@ export async function collectEnabledDocs(ctx, sessionId) {
       if (b.off && b.off[alias] === true) continue
       try {
         const doc = await readSkillDoc(linkRoot(state, links[alias]), links[alias].dirName)
-        if (!overridden.has(doc.name)) docs.push(doc)
+        if (overridden.has(doc.name)) continue
+        if (skip && skip.has(doc.name)) continue
+        docs.push(doc)
       } catch { /* 链接目标不可读 */ }
     }
   }
-  // 工作区优先：先收集工作区，同名技能去重时保留下来的就是工作区那份
+  // 工作区优先：只要工作区里存在该技能（无论什么挡位），全局同名副本就不再参与
   const active = await resolveActiveWorkspace(ctx, sessionId, null).catch(() => null)
+  const workspaceNames = new Set()
   if (active && active.path) {
-    await push('workspace', join(active.path, '.dsh', 'skills'), state.scopes[scopeKey('workspace', active.path)])
+    const wroot = join(active.path, '.dsh', 'skills')
+    const wbucket = scopeBucket(state, scopeKey('workspace', active.path))
+    const wscan = await scanRoot(wroot, wbucket)
+    for (const s of wscan.skills) workspaceNames.add(s.name)
+    for (const s of await listLinkedSkills(state, wbucket)) workspaceNames.add(s.name)
+    await push('workspace', wroot, wbucket)
   }
-  await push('global', globalRootOf(state), state.scopes.global)
+  await push('global', globalRootOf(state), state.scopes.global, workspaceNames)
   // 会话卡片：只有「常驻」才注入
   for (const pin of pins) {
     if ((pin.mode || 'pinned') !== 'pinned') continue
@@ -791,6 +884,36 @@ export function renderActiveSkills(docs) {
 }
 
 function disposeSession(entry) { try { entry.dispose?.() } catch { /* best effort */ } }
+
+/**
+ * 把首页预置转成本会话的覆盖。只在首个 turn 之前执行一次，用完即删。
+ * 失败不阻断会话创建：预置是锦上添花，会话本身必须能起来。
+ */
+export async function applyPresetForAgent(agent) {
+  const ctx = hostCtx
+  if (!ctx || !agent || typeof agent.id !== 'string') return false
+  let applied = false
+  await mutateState(async (state) => {
+    if (!state.presets || typeof state.presets !== 'object') return
+    const wsPath = await agentWorkspacePath(ctx, agent).catch(() => '')
+    let key = presetKey(wsPath)
+    // 只认该 agent 自己工作区的预置：换了工作区就不套用，预置留给它原本的归属
+    const bucket = state.presets[key]
+    if (!bucket || !Array.isArray(bucket.pins) || !bucket.pins.length) return
+    const pins = sessionBucket(state, agent.id).pins
+    for (const pin of bucket.pins) {
+      const same = pins.find((p) => p.dirName === pin.dirName && p.scope === pin.scope)
+      if (same) { same.mode = pin.mode; applied = true; continue }
+      if (pins.length >= 50) break
+      pins.push({ scope: pin.scope, workspacePath: pin.workspacePath || null, dirName: pin.dirName, mode: pin.mode })
+      applied = true
+    }
+    // 预置是一次性的：套用后即删，下个新会话回到总面板状态
+    delete state.presets[key]
+    presetPending = Object.keys(state.presets).length > 0
+  })
+  return applied
+}
 
 async function refreshAgentSkills(agent) {
   const ctx = hostCtx
@@ -873,22 +996,7 @@ export function apply(ctx) {
       if (body.action === 'remove') {
         bucket.pins = bucket.pins.filter((p) => !same(p))
       } else if (body.action === 'mode') {
-        const pinRef = { scope, workspacePath: body.workspacePath || null, dirName }
-        const inherited = await inheritedMode(state, pinRef)
-        const existing = bucket.pins.find(same)
-        if (inherited !== null && inherited === mode) {
-          // 与全局状态一致 → 不保留覆盖
-          if (existing) bucket.pins = bucket.pins.filter((p) => !same(p))
-        } else if (existing) {
-          existing.mode = mode
-        } else {
-          if (bucket.pins.length >= 50) throw new HttpError(400, '本会话的技能覆盖最多 50 条')
-          const at = pinResolve(state, pinRef)
-          if (!(await pathIsFile(join(at.root, at.dirName, SKILL_FILE)))) {
-            throw new HttpError(404, '技能不可用（不存在或已停用）')
-          }
-          bucket.pins.push({ scope, workspacePath: scope === 'workspace' ? String(body.workspacePath || '') : null, dirName, mode })
-        }
+        await setPinMode(state, bucket.pins, { scope, workspacePath: body.workspacePath || null, dirName, mode })
       } else {
         const at = pinResolve(state, { scope, workspacePath: body.workspacePath, dirName })
         if (!(await pathIsFile(join(at.root, at.dirName, SKILL_FILE)))) {
@@ -900,6 +1008,51 @@ export function apply(ctx) {
       }
       await writeState(state)
       invalidateSkills(ctx)
+      sendJson(res, 200, { ok: true, pins: bucket.pins })
+    }))
+
+    // 首页（尚无会话）先选技能挡位：先存预置，等 agent/created 时转成该会话的覆盖
+    disposers.push(route('/preset', 'preset', async (req, res) => {
+      // 首页没有会话，只能按当前默认工作区归置；换了工作区就不套用
+      const resolvePresetWorkspace = async (given) => {
+        const raw = String(given || '').trim()
+        if (raw) return raw
+        try {
+          const active = await resolveActiveWorkspace(ctx, null, null)
+          return (active && active.path) || ''
+        } catch { return '' }
+      }
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const url = new URL(req.url || '/', 'http://localhost')
+        const workspacePath = await resolvePresetWorkspace(url.searchParams.get('workspace'))
+        const state = await readState()
+        const pins = peekPreset(state, workspacePath)
+        sendJson(res, 200, { ok: true, pins, workspacePath: workspacePath || null }, req.method === 'HEAD')
+        return
+      }
+      if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'method not allowed' }); return }
+      const body = await readJsonBody(req)
+      const workspacePath = await resolvePresetWorkspace(body.workspacePath)
+      const state = await readState()
+      const key = presetKey(workspacePath)
+      if (body.clear === true) {
+        if (state.presets && state.presets[key]) delete state.presets[key]
+        presetPending = !!(state.presets && Object.keys(state.presets).length)
+        await writeState(state)
+        sendJson(res, 200, { ok: true, pins: [] })
+        return
+      }
+      const dirName = cleanDirName(body.dirName)
+      const scope = body.scope === 'workspace' ? 'workspace' : 'global'
+      const mode = body.mode === 'available' ? 'available' : body.mode === 'off' ? 'off' : 'pinned'
+      const bucket = presetBucket(state, workspacePath)
+      // 预置也允许用工作区技能，路径由请求显式给出
+      const wsForPin = scope === 'workspace' ? (body.skillWorkspace || workspacePath) : null
+      await setPinMode(state, bucket.pins, { scope, workspacePath: wsForPin, dirName, mode })
+      bucket.at = Date.now()
+      if (!bucket.pins.length) delete state.presets[key]
+      presetPending = !!(state.presets && Object.keys(state.presets).length)
+      await writeState(state)
       sendJson(res, 200, { ok: true, pins: bucket.pins })
     }))
 
@@ -1213,6 +1366,10 @@ export function apply(ctx) {
   }
 
   hostCtx = ctx
+  // 重启后仍可能残留未套用的预置，先把标志置对，首个 turn 才走兜底
+  void readState().then((state) => {
+    presetPending = !!(state.presets && Object.keys(state.presets).length)
+  }).catch(() => {})
   try {
     const existing = (typeof ctx.agents?.list === 'function' ? ctx.agents.list() : []) || []
     for (const agent of existing) void refreshAgentSkills(agent)
@@ -1222,7 +1379,22 @@ export function apply(ctx) {
 
   if (typeof ctx.on === 'function') {
     ctx.effect(() => {
-      const offCreated = ctx.on('agent/created', ({ agent }) => { void refreshAgentSkills(agent) })
+      const offCreated = ctx.on('agent/created', async ({ agent }) => {
+        // 预置必须早于首次注入，否则首个 turn 拿不到用户选的挡位
+        try { await applyPresetForAgent(agent) } catch (error) {
+          ctx.logger?.warn?.(PLUGIN + ': 套用新会话预置失败（' + asError(error).message + '）')
+        }
+        await refreshAgentSkills(agent)
+      })
+      // 空白会话的 agent 可能早于点击就建好了；首个 turn 前再兜一次
+      const offPreStep = ctx.on('agent/pre-step', async ({ agent }, next) => {
+        if (presetPending) {
+          try { await applyPresetForAgent(agent); await refreshAgentSkills(agent) } catch (error) {
+            ctx.logger?.warn?.(PLUGIN + ': 首轮套用预置失败（' + asError(error).message + '）')
+          }
+        }
+        return next()
+      })
       const offDisposed = ctx.on('agent/disposed', ({ agent }) => {
         const entry = activeSessions.get(agent && agent.id)
         if (entry) { disposeSession(entry); activeSessions.delete(agent.id) }
@@ -1230,6 +1402,7 @@ export function apply(ctx) {
       return () => {
         try { offCreated?.() } catch { /* best effort */ }
         try { offDisposed?.() } catch { /* best effort */ }
+        try { offPreStep?.() } catch { /* best effort */ }
       }
     }, PLUGIN + ': active skill lifecycle')
   }
